@@ -9,7 +9,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace GaussianSplatting.Editor.Utils
+namespace GaussianSplatting.Runtime
 {
     // reads Niantic/Scaniverse .SPZ files:
     // https://github.com/nianticlabs/spz

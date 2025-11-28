@@ -11,7 +11,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Assertions;
 
-namespace GaussianSplatting.Editor.Utils
+namespace GaussianSplatting.Runtime
 {
     // input file splat data is read into this format
     public struct InputSplatData
