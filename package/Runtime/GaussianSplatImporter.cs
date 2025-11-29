@@ -63,6 +63,23 @@ namespace GaussianSplatting.Runtime
             return splatAsset;
         }
 
+        public GaussianSplatAsset Load(byte[] data, string name)
+        {
+            GaussianSplatAsset splatAsset = null;
+
+            if (data == null || data.Length == 0)
+            {
+                throw new ArgumentException("Input data is null or empty", nameof(data));
+            }
+
+            GaussianFileReader.ReadData(data, name, out var splatData);
+            splatAsset = CreateSplatAsset(splatData);
+            splatData.Dispose();
+
+            splatAsset.name = name;
+            return splatAsset;
+        }
+
         unsafe GaussianSplatAsset CreateSplatAsset(NativeArray<InputSplatData> splatData)
         {
             if (!splatData.IsCreated || splatData.Length == 0)
