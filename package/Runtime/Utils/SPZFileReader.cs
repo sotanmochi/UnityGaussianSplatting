@@ -9,7 +9,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using UnityEngine;
 
-namespace GaussianSplatting.Editor.Utils
+namespace GaussianSplatting.Runtime
 {
     // reads Niantic/Scaniverse .SPZ files:
     // https://github.com/nianticlabs/spz
@@ -23,6 +23,24 @@ namespace GaussianSplatting.Editor.Utils
             public uint numPoints;
             public uint sh_fracbits_flags_reserved;
         };
+
+        public static bool IsSPZData(byte[] data, string name)
+        {
+            if (data == null || data.Length < 16) return false;
+
+            try
+            {
+                using var ms = new MemoryStream(data);
+                using var gz = new GZipStream(ms, CompressionMode.Decompress);
+                ReadHeaderImpl(gz, name, out var magic, out var version, out _, out _, out _, out _);
+                return magic == 0x5053474e && version == 2;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static void ReadFileHeader(string filePath, out int vertexCount)
         {
             vertexCount = 0;
@@ -30,21 +48,24 @@ namespace GaussianSplatting.Editor.Utils
                 return;
             using var fs = File.OpenRead(filePath);
             using var gz = new GZipStream(fs, CompressionMode.Decompress);
-            ReadHeaderImpl(filePath, gz, out vertexCount, out _, out _, out _);
+            ReadHeaderImpl(gz, filePath, out _, out _, out vertexCount, out _, out _, out _);
         }
 
-        static void ReadHeaderImpl(string filePath, Stream fs, out int vertexCount, out int shLevel, out int fractBits, out int flags)
+        static void ReadHeaderImpl(Stream stream, string name, out uint magic, out uint version,
+                                    out int vertexCount, out int shLevel, out int fractBits, out int flags)
         {
             var header = new NativeArray<SpzHeader>(1, Allocator.Temp);
-            var readBytes = fs.Read(header.Reinterpret<byte>(16));
+            var readBytes = stream.Read(header.Reinterpret<byte>(16));
             if (readBytes != 16)
-                throw new IOException($"SPZ {filePath} read error, failed to read header");
+                throw new IOException($"SPZ {name} read error, failed to read header");
 
             if (header[0].magic != 0x5053474e)
-                throw new IOException($"SPZ {filePath} read error, header magic unexpected {header[0].magic}");
+                throw new IOException($"SPZ {name} read error, header magic unexpected {header[0].magic}");
             if (header[0].version != 2)
-                throw new IOException($"SPZ {filePath} read error, header version unexpected {header[0].version}");
+                throw new IOException($"SPZ {name} read error, header version unexpected {header[0].version}");
 
+            magic = header[0].magic;
+            version = header[0].version;
             vertexCount = (int)header[0].numPoints;
             shLevel = (int)(header[0].sh_fracbits_flags_reserved & 0xFF);
             fractBits = (int)((header[0].sh_fracbits_flags_reserved >> 8) & 0xFF);
@@ -67,14 +88,26 @@ namespace GaussianSplatting.Editor.Utils
         {
             using var fs = File.OpenRead(filePath);
             using var gz = new GZipStream(fs, CompressionMode.Decompress);
-            ReadHeaderImpl(filePath, gz, out var splatCount, out var shLevel, out var fractBits, out var flags);
+            ReadHeaderImpl(gz, filePath, out _, out _, out var splatCount, out var shLevel, out var fractBits, out var flags);
+            UnpackSPZData(gz, filePath, splatCount, shLevel, fractBits, out splats);
+        }
 
+        public static void ReadData(byte[] data, string name, out NativeArray<InputSplatData> splats)
+        {
+            using var ms = new MemoryStream(data);
+            using var gz = new GZipStream(ms, CompressionMode.Decompress);
+            ReadHeaderImpl(gz, name, out _, out _, out var splatCount, out var shLevel, out var fractBits, out var flags);
+            UnpackSPZData(gz, name, splatCount, shLevel, fractBits, out splats);
+        }
+
+        static void UnpackSPZData(Stream decompressedStream, string name, int splatCount, int shLevel, int fractBits, out NativeArray<InputSplatData> splats)
+        {
             if (splatCount < 1 || splatCount > 10_000_000) // 10M hardcoded in SPZ code
-                throw new IOException($"SPZ {filePath} read error, out of range splat count {splatCount}");
+                throw new IOException($"SPZ {name} read error, out of range splat count {splatCount}");
             if (shLevel < 0 || shLevel > 3)
-                throw new IOException($"SPZ {filePath} read error, out of range SH level {shLevel}");
+                throw new IOException($"SPZ {name} read error, out of range SH level {shLevel}");
             if (fractBits < 0 || fractBits > 24)
-                throw new IOException($"SPZ {filePath} read error, out of range fractional bits {fractBits}");
+                throw new IOException($"SPZ {name} read error, out of range fractional bits {fractBits}");
 
             // allocate temporary storage
             int shCoeffs = SHCoeffsForLevel(shLevel);
@@ -87,12 +120,12 @@ namespace GaussianSplatting.Editor.Utils
 
             // read file contents into temporaries
             bool readOk = true;
-            readOk &= gz.Read(packedPos) == packedPos.Length;
-            readOk &= gz.Read(packedAlpha) == packedAlpha.Length;
-            readOk &= gz.Read(packedCol) == packedCol.Length;
-            readOk &= gz.Read(packedScale) == packedScale.Length;
-            readOk &= gz.Read(packedRot) == packedRot.Length;
-            readOk &= gz.Read(packedSh) == packedSh.Length;
+            readOk &= decompressedStream.Read(packedPos) == packedPos.Length;
+            readOk &= decompressedStream.Read(packedAlpha) == packedAlpha.Length;
+            readOk &= decompressedStream.Read(packedCol) == packedCol.Length;
+            readOk &= decompressedStream.Read(packedScale) == packedScale.Length;
+            readOk &= decompressedStream.Read(packedRot) == packedRot.Length;
+            readOk &= decompressedStream.Read(packedSh) == packedSh.Length;
 
             // unpack into full splat data
             splats = new NativeArray<InputSplatData>(splatCount, Allocator.Persistent);
@@ -119,7 +152,7 @@ namespace GaussianSplatting.Editor.Utils
             if (!readOk)
             {
                 splats.Dispose();
-                throw new IOException($"SPZ {filePath} read error, file smaller than it should be");
+                throw new IOException($"SPZ {name} read error, file smaller than it should be");
             }
         }
 
@@ -159,22 +192,25 @@ namespace GaussianSplatting.Editor.Utils
                 col /= 0.15f;
                 splat.dc0 = GaussianUtils.SH0ToColor(col);
 
-                int shIdx = index * shCoeffs * 3;
-                splat.sh1 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh2 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh3 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh4 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh5 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh6 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh7 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh8 = UnpackSH(shIdx); shIdx += 3;
-                splat.sh9 = UnpackSH(shIdx); shIdx += 3;
-                splat.shA = UnpackSH(shIdx); shIdx += 3;
-                splat.shB = UnpackSH(shIdx); shIdx += 3;
-                splat.shC = UnpackSH(shIdx); shIdx += 3;
-                splat.shD = UnpackSH(shIdx); shIdx += 3;
-                splat.shE = UnpackSH(shIdx); shIdx += 3;
-                splat.shF = UnpackSH(shIdx); shIdx += 3;
+                if (shCoeffs > 0)
+                {
+                    int shIdx = index * shCoeffs * 3;
+                    splat.sh1 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh2 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh3 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh4 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh5 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh6 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh7 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh8 = UnpackSH(shIdx); shIdx += 3;
+                    splat.sh9 = UnpackSH(shIdx); shIdx += 3;
+                    splat.shA = UnpackSH(shIdx); shIdx += 3;
+                    splat.shB = UnpackSH(shIdx); shIdx += 3;
+                    splat.shC = UnpackSH(shIdx); shIdx += 3;
+                    splat.shD = UnpackSH(shIdx); shIdx += 3;
+                    splat.shE = UnpackSH(shIdx); shIdx += 3;
+                    splat.shF = UnpackSH(shIdx); shIdx += 3;
+                }
 
                 splats[index] = splat;
             }

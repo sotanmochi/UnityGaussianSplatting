@@ -2,7 +2,6 @@
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using GaussianSplatting.Runtime;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Collections.LowLevel.Unsafe;
@@ -11,7 +10,7 @@ using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Assertions;
 
-namespace GaussianSplatting.Editor.Utils
+namespace GaussianSplatting.Runtime
 {
     // input file splat data is read into this format
     public struct InputSplatData
@@ -63,6 +62,26 @@ namespace GaussianSplatting.Editor.Utils
                 return;
             }
             throw new IOException($"File {filePath} is not a supported format");
+        }
+
+        public static unsafe void ReadData(byte[] data, string name, out NativeArray<InputSplatData> splats)
+        {
+            if (PLYFileReader.IsGaussianSplatPLY(data, name))
+            {
+                NativeArray<byte> plyRawData;
+                List<(string, PLYFileReader.ElementType)> attributes;
+                PLYFileReader.ReadData(data, name, out var splatCount, out var vertexStride, out attributes, out plyRawData);
+                splats = PLYDataToSplats(plyRawData, splatCount, vertexStride, attributes);
+                ReorderSHs(splatCount, (float*)splats.GetUnsafePtr());
+                LinearizeData(splats);
+                return;
+            }
+            if (SPZFileReader.IsSPZData(data, name))
+            {
+                SPZFileReader.ReadData(data, name, out splats);
+                return;
+            }
+            throw new IOException($"Input data '{name}' is not a supported format");
         }
 
         static bool isPLY(string filePath) => filePath.EndsWith(".ply", true, CultureInfo.InvariantCulture);
